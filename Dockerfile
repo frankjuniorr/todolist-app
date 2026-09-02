@@ -3,6 +3,12 @@
 # o site-packages resultante vai para a imagem final.
 FROM python:3.11-slim AS builder
 
+# pip/setuptools/wheel vem desatualizado na imagem base e o trivy acusa CVE
+# neles (jaraco.context, wheel) mesmo sem estarem no requirements.txt -- sao
+# ferramenta de build, nao dependencia da app, mas entram no scan da imagem
+# porque a imagem base os traz. Atualizar aqui evita herdar a versao vulneravel.
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
 WORKDIR /build
 COPY requirements.txt .
 # psycopg2-binary traz wheels pre-compilados: nao e preciso gcc/libpq-dev aqui.
@@ -10,6 +16,11 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 
 FROM python:3.11-slim
+
+# Mesmo motivo do estagio anterior: esta imagem final tem seu PROPRIO pip
+# desatualizado (nao e o mesmo prefixo copiado do builder), e e ela que o
+# trivy escaneia de verdade.
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # UID/GID fixos: o fsGroup do Pod precisa casar com o GID para que os arquivos
 # de secret montados com mode 0440 sejam legiveis. Ver charts/todolist.
