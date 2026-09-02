@@ -17,17 +17,21 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 FROM python:3.11-slim
 
-# Mesmo motivo do estagio anterior: esta imagem final tem seu PROPRIO pip
-# desatualizado (nao e o mesmo prefixo copiado do builder), e e ela que o
-# trivy escaneia de verdade.
-RUN pip install --no-cache-dir --upgrade pip==26.2.1 setuptools==84.0.0 wheel==0.48.0
-
 # UID/GID fixos: o fsGroup do Pod precisa casar com o GID para que os arquivos
 # de secret montados com mode 0440 sejam legiveis. Ver charts/todolist.
 RUN groupadd --gid 10001 app \
  && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin app
 
 COPY --from=builder /install /usr/local
+
+# pip/setuptools/wheel nao servem para nada em runtime -- o ENTRYPOINT e
+# gunicorn, que nunca invoca pip. A imagem base traz um pip cuja copia
+# VENDORIZADA de msgpack e setuptools (usada internamente pelo proprio pip
+# para cache HTTP e build) tem CVE conhecido, e isso persiste ate na versao
+# mais recente do pip -- upgrade nao resolve, porque o vendor e do pip, nao
+# nosso. Solucao real: remover pip/setuptools/wheel da imagem final. Elimina
+# a CVE eliminando a superficie, em vez de esconder do scanner.
+RUN pip uninstall -y pip setuptools wheel
 
 WORKDIR /app
 COPY --chown=root:root app.py gunicorn.conf.py ./
