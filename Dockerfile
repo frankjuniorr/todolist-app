@@ -7,7 +7,7 @@ FROM python:3.11-slim AS builder
 # neles (jaraco.context, wheel) mesmo sem estarem no requirements.txt -- sao
 # ferramenta de build, nao dependencia da app, mas entram no scan da imagem
 # porque a imagem base os traz. Atualizar aqui evita herdar a versao vulneravel.
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir --upgrade pip==26.2.1 setuptools==84.0.0 wheel==0.48.0
 
 WORKDIR /build
 COPY requirements.txt .
@@ -20,7 +20,7 @@ FROM python:3.11-slim
 # Mesmo motivo do estagio anterior: esta imagem final tem seu PROPRIO pip
 # desatualizado (nao e o mesmo prefixo copiado do builder), e e ela que o
 # trivy escaneia de verdade.
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir --upgrade pip==26.2.1 setuptools==84.0.0 wheel==0.48.0
 
 # UID/GID fixos: o fsGroup do Pod precisa casar com o GID para que os arquivos
 # de secret montados com mode 0440 sejam legiveis. Ver charts/todolist.
