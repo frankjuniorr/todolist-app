@@ -2,9 +2,15 @@
 # ABOUTME: no import do modulo e portanto exige um Postgres acessivel ja no import.
 import os
 import pathlib
+import sys
 import tempfile
 
 import pytest
+
+# tests/ nao tem __init__.py, entao o modo de import padrao do pytest
+# ("prepend") coloca ESTE diretorio no sys.path, nao a raiz do repositorio --
+# e "import app" falharia com ModuleNotFoundError sem esta linha.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 # SECRETS_DIR precisa existir e conter os arquivos ANTES do import de app.py:
 # _config() e avaliado em tempo de import (app.py:33-46).
