@@ -1,0 +1,10 @@
+.git
+.github
+assets
+tests
+README.md
+Dockerfile
+.dockerignore
+**/__pycache__
+*.pyc
+.venv

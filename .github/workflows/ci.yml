@@ -1,0 +1,184 @@
+# ABOUTME: Pipeline da aplicacao: valida, constroi, assina e publica a imagem no GHCR.
+# ABOUTME: Ao final avisa o repositorio de plataforma que ha uma imagem nova.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancela execucoes obsoletas do mesmo branch: em PR com varios pushes seguidos,
+# so a ultima interessa.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Padrao restritivo no topo; cada job amplia apenas o que precisa.
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  lint:
+    name: lint e analise estatica
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks precisa do historico completo para varrer commits antigos:
+          # um segredo removido no ultimo commit continua no objeto anterior.
+          fetch-depth: 0
+
+      - name: hadolint (Dockerfile)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+
+      - name: gitleaks (segredos no historico)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: trivy (dependencias e IaC do repositorio)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          # CVE de SO sem correcao disponivel nao e acionavel: deixaria o CI
+          # vermelho de forma permanente e treinaria o time a ignorar o sinal.
+          ignore-unfixed: true
+          exit-code: '1'
+
+  test:
+    name: testes de contrato
+    runs-on: ubuntu-latest
+    services:
+      # app.py roda db.create_all() no import do modulo: sem um Postgres de pe,
+      # nem o import dos testes funciona. Um banco real e mais fiel do que um mock.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: todolist
+          POSTGRES_PASSWORD: todolist
+          POSTGRES_DB: todolist
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U todolist"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: pytest
+        env:
+          DB_HOST: localhost
+          DB_PORT: '5432'
+          DB_NAME: todolist
+          DB_PASSWORD: todolist
+        run: pytest -v tests/
+
+  build:
+    name: build, assinatura e publicacao
+    needs: [lint, test]
+    # Publicar so faz sentido no main: um PR de fork nao deve conseguir empurrar
+    # imagem para o registry.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write   # exigido pelo cosign keyless (OIDC do proprio Actions)
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      - name: trivy (imagem publicada)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: assinar imagem (keyless)
+        # Sem chave privada: a identidade vem do token OIDC do proprio workflow e
+        # a assinatura vai para o log publico Rekor. Nao ha segredo para vazar.
+        run: cosign sign --yes "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - name: gerar SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          artifact-name: sbom.spdx.json
+
+  notificar-plataforma:
+    name: avisar repositorio de plataforma
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: repository_dispatch
+        # PAT fine-grained, nao GITHUB_TOKEN: por design, eventos disparados com
+        # o GITHUB_TOKEN nao acionam workflows -- nem no proprio repositorio, nem
+        # em outro. Esta e a unica etapa do fluxo que exige um token de usuario.
+        env:
+          GH_TOKEN: ${{ secrets.PLATFORM_DISPATCH_TOKEN }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          gh api "repos/${{ github.repository_owner }}/todolist-platform/dispatches" \
+            --method POST \
+            --field event_type=nova-imagem \
+            --field "client_payload[digest]=${DIGEST}" \
+            --field "client_payload[sha]=${{ github.sha }}"

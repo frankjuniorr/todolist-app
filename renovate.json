@@ -1,0 +1,16 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "labels": ["dependencias"],
+  "packageRules": [
+    {
+      "description": "Atualizacoes de patch entram sozinhas; minor e major exigem revisao.",
+      "matchUpdateTypes": ["patch"],
+      "automerge": true
+    }
+  ]
+}
